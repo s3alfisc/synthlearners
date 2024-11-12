@@ -3,10 +3,11 @@ from typing import Optional, Union, Tuple, Literal
 from enum import Enum
 
 import numpy as np
-from scipy.optimize import fmin_slsqp
+
 from scipy.stats import norm
 import matplotlib.pyplot as plt
-import pyensmallen as pe
+
+from .solvers import _solve_lp_norm, _solve_linear, _solve_simplex
 
 from joblib import Parallel, delayed
 
@@ -26,7 +27,7 @@ class SynthMethod(Enum):
 class SynthResults:
     """Container for synthetic control results."""
 
-    weights: np.ndarray
+    unit_weights: np.ndarray
     treated_outcome: np.ndarray
     synthetic_outcome: np.ndarray
     pre_treatment_rmse: float
@@ -81,9 +82,10 @@ class Synth:
         method: Union[str, SynthMethod] = "simplex",
         p: float = 1.0,
         intercept: bool = False,
+        weight_type: str = "unit",
         max_iterations: int = 10000,
         tolerance: float = 1e-8,
-        n_jobs: int = 4,
+        n_jobs: int = 8,
     ):
         """Initialize synthetic control estimator.
 
@@ -91,6 +93,7 @@ class Synth:
             method: Estimation method ('lp_norm', 'linear', or 'simplex')
             p: L-p norm constraint (only used if method='lp_norm')
             intercept: Whether to include an intercept term
+            weight_type: Type of weights to use ('unit', 'time', or 'both')
             max_iterations: Maximum number of iterations for optimization
             tolerance: Convergence tolerance for optimization
         """
@@ -99,7 +102,9 @@ class Synth:
         self.intercept = intercept
         self.max_iterations = max_iterations
         self.tolerance = tolerance
-        self.weights_ = None
+        self.weight_type = weight_type
+        self.unit_weights = None
+        self.time_weights = None
         self.n_jobs = n_jobs
 
     def fit(
@@ -124,22 +129,41 @@ class Synth:
         control_units = np.setdiff1d(range(Y.shape[0]), treated_units)
         Y_control = Y[control_units, :]
 
+        ######################################################################
+        # unit weights
         Y_ctrl_pre, Y_treat_pre = Y_control[:, :T_pre], Y_treated[:T_pre]
 
-        if self.intercept:
+        if self.intercept:  # add intercept term to implied vertical regression
             Y_ctrl_pre = np.r_[Y_ctrl_pre, np.ones((1, T_pre))]
-            Y_control = np.r_[Y_control, np.ones((1, Y_control.shape[1]))]
+            Y_control2 = np.r_[Y_control, np.ones((1, Y_control.shape[1]))]
+        else:
+            Y_control2 = Y_control
 
-        # Solve for weights using specified method
+        if self.weight_type != "unit":
+            raise NotImplementedError("Only 'unit' weights are currently supported.")
+
+        # Solve for unit weights using specified method
         if self.method == SynthMethod.LP_NORM:
-            self.weights_ = self._solve_lp_norm(Y_ctrl_pre, Y_treat_pre)
+            self.unit_weights = _solve_lp_norm(
+                Y_ctrl_pre, Y_treat_pre, self.p, self.max_iterations, self.tolerance
+            )
         elif self.method == SynthMethod.LINEAR:
-            self.weights_ = self._solve_linear(Y_ctrl_pre, Y_treat_pre)
+            self.unit_weights = _solve_linear(Y_ctrl_pre, Y_treat_pre)
         else:  # SIMPLEX
-            self.weights_ = self._solve_simplex(Y_ctrl_pre, Y_treat_pre)
+            self.unit_weights = _solve_simplex(Y_ctrl_pre, Y_treat_pre)
+
+        ######################################################################
+        # time weights
+        if self.weight_type == "time":
+            raise NotImplementedError("Only 'unit' weights are currently supported.")
+
+        elif self.weight_type == "both":
+            raise NotImplementedError("Only 'unit' weights are currently supported.")
+
+        ######################################################################
 
         # Compute synthetic control unit
-        synthetic_outcome = np.dot(Y_control.T, self.weights_)
+        synthetic_outcome = np.dot(Y_control2.T, self.unit_weights)
 
         # Calculate pre-treatment fit
         pre_rmse = np.sqrt(
@@ -152,7 +176,7 @@ class Synth:
             jackknife_effects = self._compute_jackknife_effects(Y, treated_units, T_pre)
 
         return SynthResults(
-            weights=self.weights_,
+            unit_weights=self.unit_weights,
             treated_outcome=Y_treated,
             synthetic_outcome=synthetic_outcome,
             post_treatment_effect=np.mean(
@@ -249,52 +273,6 @@ class Synth:
             ax.legend()
 
         return ax
-
-    def _objective(self, w: np.ndarray, X: np.ndarray, y: np.ndarray) -> float:
-        """Compute objective function (squared error loss)."""
-        return np.sum((np.dot(X, w) - y) ** 2)
-
-    def _gradient(self, w: np.ndarray, X: np.ndarray, y: np.ndarray) -> np.ndarray:
-        """Compute gradient of objective function."""
-        return 2 * np.dot(X.T, (np.dot(X, w) - y))
-
-    def _solve_lp_norm(
-        self, Y_control: np.ndarray, Y_treated: np.ndarray
-    ) -> np.ndarray:
-        """Solve synthetic control problem using Frank-Wolfe with Lp norm constraint."""
-        N_control = Y_control.shape[0]
-
-        def f(w, grad):
-            if grad.size > 0:
-                grad[:] = self._gradient(w, Y_control.T, Y_treated)
-            return self._objective(w, Y_control.T, Y_treated)
-
-        optimizer = pe.FrankWolfe(
-            p=self.p, max_iterations=self.max_iterations, tolerance=self.tolerance
-        )
-        initial_w = np.ones(N_control) / N_control
-        return optimizer.optimize(f, initial_w)
-
-    def _solve_linear(self, Y_control: np.ndarray, Y_treated: np.ndarray) -> np.ndarray:
-        """Solve synthetic control problem using ordinary least squares."""
-        return np.linalg.lstsq(Y_control.T, Y_treated, rcond=None)[0]
-
-    def _solve_simplex(
-        self, Y_control: np.ndarray, Y_treated: np.ndarray
-    ) -> np.ndarray:
-        """Solve synthetic control problem with simplex constraints."""
-        N_control = Y_control.shape[0]
-        initial_w = np.repeat(1 / N_control, N_control)
-        bounds = tuple((0, 1) for _ in range(N_control))
-
-        weights = fmin_slsqp(
-            func=lambda w: self._objective(w, Y_control.T, Y_treated),
-            x0=initial_w,
-            f_eqcons=lambda x: np.sum(x) - 1,
-            bounds=bounds,
-            disp=False,
-        )
-        return weights
 
     def _jackknife_single_run(
         self, Y: np.ndarray, treated_units: np.ndarray, T_pre: int, leave_out_idx: int
