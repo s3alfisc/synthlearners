@@ -1,0 +1,33 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "synthlearners"
+version = "0.1.0"
+authors = [
+    { name="Apoorva Lal", email="lal.apoorva@gmail.com" },
+]
+description = "Fast, scalable synthetic control methods for panel data"
+readme = "README.md"
+requires-python = ">=3.10"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+]
+dependencies = [
+    "numpy",
+    "scipy",
+    "pyensmallen",
+    "pandas",
+    "matplotlib",
+    "seaborn",
+]
+
+[project.urls]
+"Homepage" = "https://github.com/apoorvalal/synthlearners"
+"Bug Tracker" = "https://github.com/apoorvalal/synthlearners/issues"
+
+[tool.hatch.build.targets.wheel]
+packages = ["synthlearners"]
