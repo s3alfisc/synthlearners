@@ -1,9 +1,148 @@
-# synthlearners/simulator.py
 import numpy as np
+import pandas as pd
 from scipy.special import expit
 from dataclasses import dataclass
-from typing import Callable, Optional, Tuple, Union
+from typing import Callable, Optional, Tuple, Union, Dict
 from abc import ABC, abstractmethod
+
+
+def generate_panel_data(
+    num_units: int = 100,
+    num_periods: int = 50,
+    num_treated: int = 5,
+    treatment_start: int = 25,
+    treatment_effect_type: str = "sharkfin",
+    selection_type: str = "prob",
+    selection_strength: float = 1.5,
+    ar_persistence: float = 0.8,
+    unit_variance: float = 2.0,
+    time_variance: float = 1.0,
+    noise_variance: float = 0.5,
+    return_raw: bool = False,
+    seed: Optional[int] = None,
+) -> Union[pd.DataFrame, Dict[str, np.ndarray]]:
+    """Generate synthetic panel data with treatment effects.
+
+    Args:
+        num_units: Number of units
+        num_periods: Number of time periods
+        num_treated: Number of treated units
+        treatment_start: Period where treatment begins
+        treatment_effect_type: Type of treatment effect ('sharkfin', 'constant', 'linear', 'none')
+        selection_type: How treated units are selected ('random', 'top', 'threshold' 'prob')
+        selection_strength: Strength of selection mechanism
+        ar_persistence: AR(1) coefficient for unit-specific trends
+        unit_variance: Variance of unit fixed effects
+        time_variance: Variance of time fixed effects
+        noise_variance: Variance of idiosyncratic noise
+        return_raw: If True, return raw outcome matrices Y0 and Y1
+        seed: Random seed
+
+    Returns:
+        DataFrame with columns: unit, time, outcome, treatment or dictionary with raw data
+    """
+    if seed is not None:
+        np.random.seed(seed)
+
+    # Generate fixed effects
+    unit_effects = np.random.normal(0, np.sqrt(unit_variance), num_units)
+    time_effects = np.random.normal(0, np.sqrt(time_variance), num_periods)
+
+    # Generate AR(1) process for each unit
+    noise = np.zeros((num_units, num_periods))
+    eps = np.random.normal(0, np.sqrt(noise_variance), (num_units, num_periods))
+    noise[:, 0] = eps[:, 0]
+    for t in range(1, num_periods):
+        noise[:, t] = ar_persistence * noise[:, t - 1] + eps[:, t]
+
+    # Combine components for control potential outcome
+    Y0 = unit_effects[:, np.newaxis] + time_effects[np.newaxis, :] + noise
+
+    # Generate treatment effects
+    if treatment_effect_type == "sharkfin":
+        # Effect that builds up and then fades
+        post_periods = num_periods - treatment_start
+        effect_path = np.zeros(post_periods)
+        peak_at = int(post_periods * 0.3)  # Peak at 30% of post-treatment
+
+        # Build up phase
+        effect_path[:peak_at] = 0.2 * np.log(1 + np.arange(peak_at))
+        # Fade out phase
+        effect_path[peak_at:] = effect_path[peak_at - 1] * np.exp(
+            -0.2 * np.arange(post_periods - peak_at)
+        )
+
+    elif treatment_effect_type == "constant":
+        effect_path = np.ones(num_periods - treatment_start) * 2.0
+
+    elif treatment_effect_type == "linear":
+        effect_path = 0.1 * np.arange(num_periods - treatment_start)
+
+    elif treatment_effect_type == "none":
+        effect_path = np.zeros(num_periods - treatment_start)
+
+    # Select treated units
+    if selection_type == "random":
+        treated_units = np.random.choice(num_units, num_treated, replace=False)
+    elif selection_type == "top":
+        # Select units with highest average pre-treatment outcomes
+        pre_treat_means = Y0[:, :treatment_start].mean(axis=1)
+        treated_units = np.argsort(pre_treat_means)[-num_treated:]
+    elif selection_type == "threshold":
+        # Select units above threshold in pre-treatment period
+        pre_treat_means = Y0[:, :treatment_start].mean(axis=1)
+        threshold = np.percentile(
+            pre_treat_means, 100 - (num_treated / num_units) * 100
+        )
+        treated_units = np.where(pre_treat_means >= threshold)[0]
+
+    elif selection_type == "prob":
+        # Generate selection score based on unit effects
+        score = selection_strength * unit_effects
+
+        # Convert to probabilities using logistic function
+        probs = expit(score)
+        probs = probs / probs.sum()  # Normalize to sum to 1
+
+        # Sample units based on these probabilities
+        treated_units = np.random.choice(
+            num_units, size=num_treated, replace=False, p=probs
+        )
+
+    # Create treatment matrix and apply effects
+    W = np.zeros((num_units, num_periods))
+    W[treated_units, treatment_start:] = 1
+
+    Y1 = Y0.copy()
+    Y1[:, treatment_start:] += W[:, treatment_start:] * effect_path[np.newaxis, :]
+
+    # Convert to long format DataFrame
+    unit_idx = np.repeat(np.arange(num_units), num_periods)
+    time_idx = np.tile(np.arange(num_periods), num_units)
+    treatment = W.flatten()
+    outcome = np.where(treatment == 1, Y1.flatten(), Y0.flatten())
+
+    if return_raw:
+        Y = np.where(treatment == 1, Y1, Y0)
+        return {
+            "Y": Y,
+            "Y1": Y1,
+            "Y0": Y0,
+        }
+
+    df = pd.DataFrame(
+        {
+            "unit": unit_idx,
+            "time": time_idx,
+            "outcome": outcome,
+            "treatment": treatment.astype(int),
+        }
+    )
+
+    return df
+
+
+######################################################################
 
 
 class BaseDGP(ABC):
@@ -63,7 +202,7 @@ class SimulationConfig:
     n_treated: int = 1
     selection_mean: float = 1.0
     dgp: BaseDGP = FactorDGP()
-    random_seed: Optional[int] = None
+    random_seed: Optional[int] = 42
     treatment_effect: Union[float, np.ndarray] = 0.0  # New parameter
 
 

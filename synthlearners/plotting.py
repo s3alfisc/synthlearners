@@ -114,7 +114,7 @@ class SynthPlotter:
                 result.synthetic_outcome,
                 alpha=0.6,
                 label=label,
-                color=self.palette.get(method, None),
+                color=self.palette.get(label, None),
             )
 
         # Add treatment line
@@ -170,7 +170,7 @@ class SynthPlotter:
                     label=label,
                     marker=".",
                     alpha=0.6,
-                    color=self.palette.get(method, None),
+                    color=self.palette.get(label, None),
                 )
 
             ax.axhline(0, color="black", linestyle=":", alpha=0.5)
