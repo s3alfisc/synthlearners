@@ -80,6 +80,7 @@ class Synth:
         self,
         method: Union[str, SynthMethod] = "simplex",
         p: float = 1.0,
+        intercept: bool = False,
         max_iterations: int = 10000,
         tolerance: float = 1e-8,
         n_jobs: int = 4,
@@ -89,11 +90,13 @@ class Synth:
         Args:
             method: Estimation method ('lp_norm', 'linear', or 'simplex')
             p: L-p norm constraint (only used if method='lp_norm')
+            intercept: Whether to include an intercept term
             max_iterations: Maximum number of iterations for optimization
             tolerance: Convergence tolerance for optimization
         """
         self.method = SynthMethod(method) if isinstance(method, str) else method
         self.p = p
+        self.intercept = intercept
         self.max_iterations = max_iterations
         self.tolerance = tolerance
         self.weights_ = None
@@ -121,13 +124,19 @@ class Synth:
         control_units = np.setdiff1d(range(Y.shape[0]), treated_units)
         Y_control = Y[control_units, :]
 
+        Y_ctrl_pre, Y_treat_pre = Y_control[:, :T_pre], Y_treated[:T_pre]
+
+        if self.intercept:
+            Y_ctrl_pre = np.r_[Y_ctrl_pre, np.ones((1, T_pre))]
+            Y_control = np.r_[Y_control, np.ones((1, Y_control.shape[1]))]
+
         # Solve for weights using specified method
         if self.method == SynthMethod.LP_NORM:
-            self.weights_ = self._solve_lp_norm(Y_control[:, :T_pre], Y_treated[:T_pre])
+            self.weights_ = self._solve_lp_norm(Y_ctrl_pre, Y_treat_pre)
         elif self.method == SynthMethod.LINEAR:
-            self.weights_ = self._solve_linear(Y_control[:, :T_pre], Y_treated[:T_pre])
+            self.weights_ = self._solve_linear(Y_ctrl_pre, Y_treat_pre)
         else:  # SIMPLEX
-            self.weights_ = self._solve_simplex(Y_control[:, :T_pre], Y_treated[:T_pre])
+            self.weights_ = self._solve_simplex(Y_ctrl_pre, Y_treat_pre)
 
         # Compute synthetic control unit
         synthetic_outcome = np.dot(Y_control.T, self.weights_)
