@@ -1,7 +1,8 @@
 # `synthlearners`: Scalable Synthetic Control Methods
 
-synthetic control methods backed by the `pyensmallen` library for fast optimisation. 
-Supports 
+synthetic control methods powered by the [`pyensmallen`](https://github.com/apoorvalal/pyensmallen) library for fast optimisation.
+
+Supports
 - (Simplex/Lasso/Ridge) unit weights, (time weights forthcoming)
 - jacknife confidence intervals (permutation tests forthcoming)
 - visualisations
@@ -11,3 +12,5 @@ Supports
 ```
 pip install git+https://github.com/apoorvalal/synthlearners/
 ```
+
+Contributions welcome!
