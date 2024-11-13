@@ -7,7 +7,7 @@ import numpy as np
 from scipy.stats import norm
 import matplotlib.pyplot as plt
 
-from .solvers import _solve_lp_norm, _solve_linear, _solve_simplex
+from .solvers import _solve_lp_norm, _solve_linear, _solve_simplex, _solve_matching
 
 from joblib import Parallel, delayed
 
@@ -21,6 +21,7 @@ class SynthMethod(Enum):
     LP_NORM = "lp_norm"
     LINEAR = "linear"
     SIMPLEX = "simplex"
+    MATCHING = "matching"
 
 
 @dataclass
@@ -75,7 +76,7 @@ class SynthResults:
 
 
 class Synth:
-    """Base class for synthetic control estimators."""
+    """Base class for synthetic control estimators with support for individual unit matching."""
 
     def __init__(
         self,
@@ -86,16 +87,19 @@ class Synth:
         max_iterations: int = 10000,
         tolerance: float = 1e-8,
         n_jobs: int = 8,
+        granular_weights: bool = False,
     ):
         """Initialize synthetic control estimator.
 
         Args:
-            method: Estimation method ('lp_norm', 'linear', or 'simplex')
+            method: Estimation method ('lp_norm', 'linear', 'simplex', or 'matching')
             p: L-p norm constraint (only used if method='lp_norm')
             intercept: Whether to include an intercept term
             weight_type: Type of weights to use ('unit', 'time', or 'both')
             max_iterations: Maximum number of iterations for optimization
             tolerance: Convergence tolerance for optimization
+            n_jobs: Number of parallel jobs for jackknife
+            granular_weights: Whether to compute unit-specific weights for each treated unit
         """
         self.method = SynthMethod(method) if isinstance(method, str) else method
         self.p = p
@@ -103,9 +107,10 @@ class Synth:
         self.max_iterations = max_iterations
         self.tolerance = tolerance
         self.weight_type = weight_type
+        self.n_jobs = n_jobs
+        self.granular_weights = granular_weights
         self.unit_weights = None
         self.time_weights = None
-        self.n_jobs = n_jobs
 
     def fit(
         self,
@@ -114,6 +119,7 @@ class Synth:
         T_pre: int,
         T_post: Optional[int] = None,
         compute_jackknife: bool = True,
+        **kwargs,
     ) -> SynthResults:
         """Fit synthetic control model."""
         treated_units = (
@@ -125,16 +131,10 @@ class Synth:
         self.T_pre = T_pre
 
         # Split data into treated and control groups
-        Y_treated = Y[treated_units, :].mean(axis=0)
         control_units = np.setdiff1d(range(Y.shape[0]), treated_units)
         Y_control = Y[control_units, :]
 
-        ######################################################################
-        # unit weights
-        Y_ctrl_pre, Y_treat_pre = Y_control[:, :T_pre], Y_treated[:T_pre]
-
-        if self.intercept:  # add intercept term to implied vertical regression
-            Y_ctrl_pre = np.r_[Y_ctrl_pre, np.ones((1, T_pre))]
+        if self.intercept:
             Y_control2 = np.r_[Y_control, np.ones((1, Y_control.shape[1]))]
         else:
             Y_control2 = Y_control
@@ -142,28 +142,82 @@ class Synth:
         if self.weight_type != "unit":
             raise NotImplementedError("Only 'unit' weights are currently supported.")
 
-        # Solve for unit weights using specified method
-        if self.method == SynthMethod.LP_NORM:
-            self.unit_weights = _solve_lp_norm(
-                Y_ctrl_pre, Y_treat_pre, self.p, self.max_iterations, self.tolerance
-            )
-        elif self.method == SynthMethod.LINEAR:
-            self.unit_weights = _solve_linear(Y_ctrl_pre, Y_treat_pre)
-        else:  # SIMPLEX
-            self.unit_weights = _solve_simplex(Y_ctrl_pre, Y_treat_pre)
+        Y_ctrl_pre = Y_control2[:, :T_pre]
 
-        ######################################################################
-        # time weights
-        if self.weight_type == "time":
-            raise NotImplementedError("Only 'unit' weights are currently supported.")
+        if self.granular_weights:
+            # Compute weights and synthetic outcomes for each treated unit
+            individual_weights = []
+            individual_synthetic = []
 
-        elif self.weight_type == "both":
-            raise NotImplementedError("Only 'unit' weights are currently supported.")
+            for treated_idx in treated_units:
+                Y_treat_pre = Y[treated_idx, :T_pre]
 
-        ######################################################################
+                # Get weights for this treated unit
+                if self.method == SynthMethod.LP_NORM:
+                    weights = _solve_lp_norm(
+                        Y_ctrl_pre,
+                        Y_treat_pre,
+                        self.p,
+                        self.max_iterations,
+                        self.tolerance,
+                        **kwargs,
+                    )
+                elif self.method == SynthMethod.LINEAR:
+                    weights = _solve_linear(Y_ctrl_pre, Y_treat_pre, **kwargs)
+                elif self.method == SynthMethod.MATCHING:
+                    weights = _solve_matching(
+                        Y_ctrl_pre,
+                        Y_treat_pre,
+                        **kwargs,
+                    )
+                elif self.method == SynthMethod.SIMPLEX:
+                    weights = _solve_simplex(
+                        Y_ctrl_pre,
+                        Y_treat_pre,
+                        **kwargs,
+                    )
+                else:
+                    raise NotImplementedError(
+                        f"Method {self.method} not implemented. Please select one of ['lp_norm', 'linear', 'simplex', 'matching']"
+                    )
 
-        # Compute synthetic control unit
-        synthetic_outcome = np.dot(Y_control2.T, self.unit_weights)
+                individual_weights.append(weights)
+                synthetic = np.dot(Y_control2.T, weights)
+                individual_synthetic.append(synthetic)
+
+            # Average the weights and synthetic outcomes
+            self.unit_weights = np.mean(individual_weights, axis=0)
+            synthetic_outcome = np.mean(individual_synthetic, axis=0)
+            Y_treated = Y[treated_units].mean(
+                axis=0
+            )  # Still need average treated outcome
+
+        else:
+            # Original behavior: average treated units first, then find weights
+            Y_treated = Y[treated_units].mean(axis=0)
+            Y_treat_pre = Y_treated[:T_pre]
+
+            if self.method == SynthMethod.LP_NORM:
+                self.unit_weights = _solve_lp_norm(
+                    Y_ctrl_pre,
+                    Y_treat_pre,
+                    self.p,
+                    self.max_iterations,
+                    self.tolerance,
+                    **kwargs,
+                )
+            elif self.method == SynthMethod.LINEAR:
+                self.unit_weights = _solve_linear(Y_ctrl_pre, Y_treat_pre, **kwargs)
+            elif self.method == SynthMethod.MATCHING:
+                self.unit_weights = _solve_matching(Y_ctrl_pre, Y_treat_pre, **kwargs)
+            elif self.method == SynthMethod.SIMPLEX:
+                self.unit_weights = _solve_simplex(Y_ctrl_pre, Y_treat_pre, **kwargs)
+            else:
+                raise NotImplementedError(
+                    f"Method {self.method} not implemented. Please select one of ['lp_norm', 'linear', 'simplex', 'matching']"
+                )
+
+            synthetic_outcome = np.dot(Y_control2.T, self.unit_weights)
 
         # Calculate pre-treatment fit
         pre_rmse = np.sqrt(
