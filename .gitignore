@@ -15,7 +15,6 @@
 *.shx
 *.qpj
 *.dbf
-*.RData
 *.Rds
 *.tab
 *.swp
@@ -27,3 +26,4 @@
 *.blg
 *.out
 *.synctex.gz
+notebooks/*.py

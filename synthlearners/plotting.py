@@ -166,7 +166,7 @@ class SynthPlotter:
                     method if method != "lp_norm" else f"lp constrained (p={result.p})"
                 )
                 ax.plot(
-                    result.weights,
+                    result.unit_weights,
                     label=label,
                     marker=".",
                     alpha=0.6,
@@ -185,7 +185,7 @@ class SynthPlotter:
                     method if method != "lp_norm" else f"lp constrained (p={result.p})"
                 )
                 ax.hist(
-                    result.weights,
+                    result.unit_weights,
                     alpha=0.6,
                     label=label,
                     color=self.palette.get(method, None),
