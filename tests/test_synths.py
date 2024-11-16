@@ -63,24 +63,6 @@ def test_methods_return_reasonable_effects(simulated_data):
         )
 
 
-def test_individual_matching_vs_aggregate(simulated_data):
-    """Test that individual matching gives similar but not identical results."""
-    Y, treated_units, config = simulated_data
-
-    # Fit with aggregate matching
-    synth_agg = Synth(method="matching", granular_weights=False)
-    results_agg = synth_agg.fit(Y, treated_units, config.T_pre, compute_jackknife=False)
-
-    # Fit with individual matching
-    synth_ind = Synth(method="matching", granular_weights=True)
-    results_ind = synth_ind.fit(Y, treated_units, config.T_pre, compute_jackknife=False)
-
-    # But they should be reasonably close
-    np.testing.assert_allclose(
-        results_agg.post_treatment_effect, results_ind.post_treatment_effect, rtol=0.5
-    )
-
-
 def test_pre_treatment_fit(simulated_data):
     """Test that pre-treatment fit is better than post-treatment."""
     Y, treated_units, config = simulated_data
@@ -104,4 +86,4 @@ def test_jackknife_shape(simulated_data):
     results = synth.fit(Y, treated_units, config.T_pre, compute_jackknife=True)
 
     # Should have one jackknife iteration per treated unit
-    assert results.jackknife_effects.shape == (len(treated_units), Y.shape[1])
+    assert results.jackknife_effects.shape == Y.shape

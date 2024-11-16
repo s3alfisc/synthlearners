@@ -23,14 +23,17 @@ class SynthPlotter:
         self.figsize = figsize
         self.style = style
         self.default_palette = {
-            "treated": "blue",
-            "did": "gray",
-            "controls": "lightgray",
-            "lp_norm": "orange",
-            "linear": "green",
-            "simplex": "purple",
-            "treatment_line": "red",
+            "treated": "#000000",  # Black
+            "did": "#66c2a5",  # Seafoam green (Set2)
+            "controls": "grey",  #
+            "lp constrained (p=1)": "#8da0cb",  # Blue-purple (Set2)
+            "lp constrained (p=2)": "#e78ac3",  # Pink (Set2)
+            "linear": "#5a8f2f",  # Darker green
+            "simplex": "#b8a030",  # Darker yellow/gold
+            "matching": "#a67d53",  # Darker tan/brown
+            "treatment_line": "#e41a1c",  # Bright red
         }
+
         self.palette = palette or self.default_palette
 
     def plot_trajectories(
@@ -103,12 +106,7 @@ class SynthPlotter:
         # Plot synthetic controls
         for result in results:
             method = result.method.value
-            if method == "lp_norm":
-                label = f"lp constrained (p={result.p})"  # Now using result.p
-            elif method == "linear":
-                label = "Linear"
-            else:
-                label = "Simplex"
+            label = method if method != "lp_norm" else f"lp constrained (p={result.p})"
 
             ax.plot(
                 result.synthetic_outcome,
@@ -122,7 +120,6 @@ class SynthPlotter:
             T_pre,
             color=self.palette["treatment_line"],
             linestyle="--",
-            label="Treatment",
         )
 
         # Customize plot
@@ -188,7 +185,7 @@ class SynthPlotter:
                     result.unit_weights,
                     alpha=0.6,
                     label=label,
-                    color=self.palette.get(method, None),
+                    color=self.palette.get(label, None),
                     bins=30,
                 )
 

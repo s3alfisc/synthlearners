@@ -3,13 +3,13 @@ from typing import Optional, Union, Tuple, Literal
 from enum import Enum
 
 import numpy as np
-
 from scipy.stats import norm
 import matplotlib.pyplot as plt
-
-from .solvers import _solve_lp_norm, _solve_linear, _solve_simplex, _solve_matching
-
 from joblib import Parallel, delayed
+from tqdm.auto import tqdm
+
+from .utils import tqdm_joblib
+from .solvers import _solve_lp_norm, _solve_linear, _solve_simplex, _solve_matching
 
 
 ######################################################################
@@ -28,14 +28,27 @@ class SynthMethod(Enum):
 class SynthResults:
     """Container for synthetic control results."""
 
-    unit_weights: np.ndarray
-    treated_outcome: np.ndarray
-    synthetic_outcome: np.ndarray
-    pre_treatment_rmse: float
-    post_treatment_effect: float
-    method: SynthMethod
-    p: Optional[float] = None
-    jackknife_effects: Optional[np.ndarray] = None
+    def __init__(
+        self,
+        unit_weights: np.ndarray,
+        treated_outcome: np.ndarray,
+        synthetic_outcome: np.ndarray,
+        pre_treatment_rmse: float,
+        post_treatment_effect: float,
+        method: "SynthMethod",
+        p: Optional[float] = None,
+        jackknife_effects: Optional[np.ndarray] = None,
+        permutation_p_value: Optional[float] = None,
+    ):
+        self.unit_weights = unit_weights
+        self.treated_outcome = treated_outcome
+        self.synthetic_outcome = synthetic_outcome
+        self.pre_treatment_rmse = pre_treatment_rmse
+        self.post_treatment_effect = post_treatment_effect
+        self.method = method
+        self.p = p
+        self.jackknife_effects = jackknife_effects
+        self.permutation_p_value = permutation_p_value
 
     def treatment_effect(self) -> np.ndarray:
         """Calculate treatment effect."""
@@ -54,14 +67,7 @@ class SynthResults:
     def confidence_intervals(
         self, alpha: float = 0.05
     ) -> Optional[Tuple[np.ndarray, np.ndarray]]:
-        """Calculate confidence intervals using jackknife variance.
-
-        Args:
-            alpha: Significance level (default: 0.05 for 95% CI)
-
-        Returns:
-            Tuple of (lower_bound, upper_bound) arrays or None if jackknife not available
-        """
+        """Calculate confidence intervals using jackknife variance."""
         if self.jackknife_effects is None:
             return None
 
@@ -118,7 +124,8 @@ class Synth:
         treated_units: Union[int, np.ndarray],
         T_pre: int,
         T_post: Optional[int] = None,
-        compute_jackknife: bool = True,
+        compute_jackknife: bool = False,
+        compute_permutation: bool = False,
         **kwargs,
     ) -> SynthResults:
         """Fit synthetic control model."""
@@ -194,7 +201,8 @@ class Synth:
 
         else:
             # Original behavior: average treated units first, then find weights
-            Y_treated = Y[treated_units].mean(axis=0)
+            # Y_treated = Y[treated_units].mean(axis=0)
+            Y_treated = Y[treated_units].reshape(-1, Y.shape[1]).mean(axis=0)
             Y_treat_pre = Y_treated[:T_pre]
 
             if self.method == SynthMethod.LP_NORM:
@@ -229,6 +237,13 @@ class Synth:
         if compute_jackknife:
             jackknife_effects = self._compute_jackknife_effects(Y, treated_units, T_pre)
 
+        # Calculate permutation p-value if requested
+        permutation_p_value = None
+        if compute_permutation:
+            permutation_p_value = self._compute_permutation_p_value(
+                Y, treated_units, T_pre
+            )
+
         return SynthResults(
             unit_weights=self.unit_weights,
             treated_outcome=Y_treated,
@@ -241,6 +256,7 @@ class Synth:
             method=self.method,
             p=self.p if self.method == SynthMethod.LP_NORM else None,
             jackknife_effects=jackknife_effects,
+            permutation_p_value=permutation_p_value,
         )
 
     def plot(
@@ -321,7 +337,11 @@ class Synth:
                         label=f"{int((1-alpha)*100)}% CI",
                     )
 
-            ax.set_title(f"Treatment Effect \n ATT: {results.att():.2f}")
+            if results.permutation_p_value is not None:
+                ts = f"Treatment Effect \n ATT: {results.att():.2f} (p={results.permutation_p_value:.3f})"
+            else:
+                ts = f"Treatment Effect \n ATT: {results.att():.2f}"
+            ax.set_title(ts)
             ax.set_xlabel("Time Relative to Treatment")
             ax.set_ylabel("Effect Size")
             ax.legend()
@@ -331,18 +351,20 @@ class Synth:
     def _jackknife_single_run(
         self, Y: np.ndarray, treated_units: np.ndarray, T_pre: int, leave_out_idx: int
     ) -> np.ndarray:
-        """Compute single jackknife iteration.
+        """Run single jackknife iteration leaving out one unit."""
+        # Create a copy of Y without the left-out unit
+        Y_reduced = np.delete(Y, leave_out_idx, axis=0)
 
-        Args:
-            Y: Panel data array
-            treated_units: Array of treated unit indices
-            T_pre: Pre-treatment period cutoff
-            leave_out_idx: Index of treated unit to leave out
+        # Adjust treated_units indices to account for removal
+        adjusted_treated = np.array(
+            [
+                i if i < leave_out_idx else i - 1
+                for i in treated_units
+                if i != leave_out_idx
+            ]
+        )
 
-        Returns:
-            Treatment effect for this jackknife iteration
-        """
-        # Create a new instance with same parameters for thread safety
+        # Create new instance with same parameters
         synth_instance = Synth(
             method=self.method,
             p=self.p,
@@ -350,13 +372,15 @@ class Synth:
             tolerance=self.tolerance,
         )
 
-        # Leave out one treated unit
-        jackknife_treated = np.delete(treated_units, leave_out_idx)
-
-        # Fit synthetic control on reduced sample
+        # Fit on reduced sample
         results = synth_instance.fit(
-            Y, jackknife_treated, T_pre, compute_jackknife=False
+            Y_reduced,
+            adjusted_treated,
+            T_pre,
+            compute_jackknife=False,
+            compute_permutation=False,
         )
+
         return results.treatment_effect()
 
     def _compute_jackknife_effects(
@@ -378,12 +402,85 @@ class Synth:
         if len(treated_units) <= 1:
             return None
 
-        n_treated = len(treated_units)
+        n = Y.shape[0]
 
-        # Use parallel processing with default batch size
-        effects = Parallel(n_jobs=self.n_jobs)(
-            delayed(self._jackknife_single_run)(Y, treated_units, T_pre, i)
-            for i in range(n_treated)
-        )
+        # Create progress bar and run parallel computation
+        with tqdm_joblib(
+            tqdm(total=n, desc="Computing jackknife estimates")
+        ) as progress_bar:
+            effects = Parallel(n_jobs=self.n_jobs)(
+                delayed(self._jackknife_single_run)(Y, treated_units, T_pre, i)
+                for i in range(n)
+            )
 
         return np.array(effects)
+
+    def _compute_permutation_p_value(
+        self, Y: np.ndarray, treated_units: np.ndarray, T_pre: int
+    ) -> float:
+        """Compute permutation test p-value."""
+        # Get the true effect for comparison
+        true_results = self.fit(
+            Y, treated_units, T_pre, compute_jackknife=False, compute_permutation=False
+        )
+        true_effect = np.abs(true_results.post_treatment_effect)
+
+        n = Y.shape[0]
+        if (n - 1) <= 20:
+            print(
+                f"You have {n} units, so the lowest possible p-value is {1/(n-1)}, which is smaller than traditional α of 0.05 \nPermutation test may be unreliable"
+            )
+
+        # Get control units
+        control_units = np.setdiff1d(range(Y.shape[0]), treated_units)
+
+        # Run parallel computation with progress bar
+        with tqdm_joblib(
+            tqdm(total=len(control_units), desc="Computing permutation test")
+        ) as progress_bar:
+            placebo_effects = Parallel(n_jobs=self.n_jobs)(
+                delayed(self._compute_placebo_effect)(
+                    Y, control_unit, treated_units, T_pre
+                )
+                for control_unit in control_units
+            )
+
+        # Convert to absolute values for two-sided test
+        placebo_effects = np.abs(placebo_effects)
+
+        # Compute p-value as proportion of placebo effects larger than true effect
+        p_value = np.mean(placebo_effects >= true_effect)
+
+        return p_value
+
+    def _compute_placebo_effect(
+        self, Y: np.ndarray, placebo_unit: int, original_treated: np.ndarray, T_pre: int
+    ) -> float:
+        """Compute effect for a single placebo treatment."""
+        # Remove original treated units from the data
+        Y_reduced = np.delete(Y, original_treated, axis=0)
+
+        # Adjust placebo unit index to account for removed treated units
+        adjusted_placebo = placebo_unit - np.sum(original_treated < placebo_unit)
+
+        # Create new instance with same parameters
+        synth_instance = Synth(
+            method=self.method,
+            p=self.p,
+            max_iterations=self.max_iterations,
+            tolerance=self.tolerance,
+        )
+
+        # Fit synthetic control using placebo unit as treated
+        results = synth_instance.fit(
+            Y_reduced,
+            adjusted_placebo,
+            T_pre,
+            compute_jackknife=False,
+            compute_permutation=False,
+        )
+
+        return results.post_treatment_effect
+
+
+######################################################################

@@ -162,12 +162,16 @@ class FactorDGP(BaseDGP):
         K: int = 4,
         unit_fac_lb: float = -5,
         unit_fac_ub: float = 3,
+        time_fac_lb: float = -2,
+        time_fac_ub: float = 2,
         sigma: float = 0.1,
         trend_sigma: float = 0.01,
     ):
         self.K = K
         self.unit_fac_lb = unit_fac_lb
         self.unit_fac_ub = unit_fac_ub
+        self.time_fac_lb = time_fac_lb
+        self.time_fac_ub = time_fac_ub
         self.sigma = sigma
         self.trend_sigma = trend_sigma
 
@@ -182,13 +186,13 @@ class FactorDGP(BaseDGP):
         Returns:
             Tuple of (Y, L) where Y is outcomes and L is unit factors
         """
-        F = np.random.rand(T, self.K)
+        F = np.random.uniform(self.time_fac_lb, self.time_fac_ub, (T, self.K))
         L = np.random.uniform(self.unit_fac_lb, self.unit_fac_ub, (N, self.K))
         time_trends = np.random.normal(0, self.trend_sigma, (N, 1)) * np.arange(
             T
         ).reshape(1, T)
         epsilon = np.random.normal(0, self.sigma, (N, T))
-        Y = np.dot(L, F.T) + epsilon + time_trends
+        Y = np.dot(L, F.T) + time_trends + epsilon
         return Y, L
 
 
@@ -203,7 +207,7 @@ class SimulationConfig:
     selection_mean: float = 1.0
     dgp: BaseDGP = FactorDGP()
     random_seed: Optional[int] = 42
-    treatment_effect: Union[float, np.ndarray] = 0.0  # New parameter
+    treatment_effect: Union[float, np.ndarray] = 0.0
 
 
 class PanelSimulator:
