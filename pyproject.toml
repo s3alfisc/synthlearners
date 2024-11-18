@@ -31,3 +31,6 @@ dependencies = [
 
 [tool.hatch.build.targets.wheel]
 packages = ["synthlearners"]
+
+[tool.hatch.envs.default.scripts]
+test = "pytest"
