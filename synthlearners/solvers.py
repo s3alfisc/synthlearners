@@ -2,6 +2,8 @@ import numpy as np
 from scipy.optimize import fmin_slsqp
 import pyensmallen as pe
 
+from .knn_faiss import FastNearestNeighbors
+
 
 def _objective(w: np.ndarray, X: np.ndarray, y: np.ndarray) -> float:
     """Compute objective function (squared error loss)."""
@@ -39,6 +41,20 @@ def _solve_linear(Y_control: np.ndarray, Y_treated: np.ndarray) -> np.ndarray:
 
 
 def _solve_simplex(Y_control: np.ndarray, Y_treated: np.ndarray) -> np.ndarray:
+
+    def f(w, grad):
+        if grad.size > 0:
+            grad[:] = _gradient(w, Y_control.T, Y_treated)
+        return _objective(w, Y_control.T, Y_treated)
+
+    # Initialize optimizer
+    optimizer = pe.SimplexFrankWolfe(maxIterations=10000, tolerance=1e-8)
+    w_init = np.repeat(1.0 / Y_control.shape[0], Y_control.shape[0])
+    w_opt = optimizer.optimize(f, w_init)
+    return w_opt
+
+
+def _solve_simplex_slsqp(Y_control: np.ndarray, Y_treated: np.ndarray) -> np.ndarray:
     """Solve synthetic control problem with simplex constraints."""
     N_control = Y_control.shape[0]
     initial_w = np.repeat(1 / N_control, N_control)
@@ -51,4 +67,41 @@ def _solve_simplex(Y_control: np.ndarray, Y_treated: np.ndarray) -> np.ndarray:
         bounds=bounds,
         disp=False,
     )
+    return weights
+
+
+def _solve_matching(
+    Y_control: np.ndarray, Y_treated: np.ndarray, k: int = 5
+) -> np.ndarray:
+    """
+    Solve synthetic control problem using k-nearest neighbors matching.
+
+    Args:
+        Y_control (np.ndarray): Control unit outcomes of shape (N_control, T)
+        Y_treated (np.ndarray): Treated unit outcomes of shape (T,)
+        k (int): Number of nearest neighbors to match with
+
+    Returns:
+        np.ndarray: Weight vector of length N_control with k entries equal to 1/k
+                   and the rest equal to 0
+    """
+    # Initialize the FAISS nearest neighbors finder
+    # Using Mahalanobis distance to account for correlation in time series
+    nn = FastNearestNeighbors(metric="mahalanobis", index_type="flatl2")
+
+    # Fit on control units
+    nn.fit(Y_control)
+
+    # Find k nearest neighbors
+    # Note: Y_treated needs to be reshaped to 2D array for FAISS
+    Y_treated_2d = Y_treated.reshape(1, -1)
+    _, indices = nn.kneighbors(Y_treated_2d, n_neighbors=k)
+
+    # Create weight vector
+    N_control = Y_control.shape[0]
+    weights = np.zeros(N_control)
+
+    # Assign equal weights (1/k) to the k nearest neighbors
+    weights[indices[0]] = 1.0 / k
+
     return weights

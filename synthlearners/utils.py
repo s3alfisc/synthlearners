@@ -1,6 +1,9 @@
 import pandas as pd
 import numpy as np
 from typing import Union, Optional, Tuple
+import contextlib
+import joblib
+
 
 
 def prepare_panel(
@@ -11,33 +14,37 @@ def prepare_panel(
     treatment_col: str,
     pre_treatment_period: Optional[Union[int, float]] = None,
 ) -> dict:
-    """Enhanced version that returns additional information about the panel structure.
+    """Prepare panel data for use in Synth.
 
-    Returns dictionary with keys:
-        - Y: Outcome matrix (N x T)
-        - treated_units: Array of treated unit indices
-        - T_pre: Number of pre-treatment periods
-        - unit_labels: Series mapping matrix rows to original unit IDs
-        - time_periods: Array of original time period values
-        - treatment_matrix: Binary treatment indicator matrix
+    Args:
+        df (pd.DataFrame): Dataframe
+        unit_col (str): unit identifier
+        time_col (str): time identifier
+        outcome_col (str): outcome variable
+        treatment_col (str): treatment variable
+        pre_treatment_period (Optional[Union[int, float]], optional): pre-treatment period. Defaults to None.
+
+    Returns:
+        dict: Dictionary containing the following
+            Y: Outcome matrix (N x T)
+            W: Treatment matrix (N x T)
+            treated_units: Array of treated unit indices
+            T_pre: Number of pre-treatment periods
+            unit_labels: Unique unit labels
+            time_periods: Sorted array of time periods
     """
     # Basic data preparation
-    Y, treated_units, T_pre = prepare_panel_data(
+    Y, W, treated_units, T_pre = _prepare_panel_data(
         df, unit_col, time_col, outcome_col, treatment_col, pre_treatment_period
     )
 
     # Get additional information
-    unit_labels = pd.Series(df[unit_col].unique(), name="unit_labels")
-
-    time_periods = np.sort(df[time_col].unique())
-
-    treatment_matrix = df.pivot(
-        index=unit_col, columns=time_col, values=treatment_col
-    ).values
+    unit_labels = pd.Series(df[unit_col].unique()).sort_values()
+    time_periods = pd.Series(df[time_col].unique()).sort_values()
 
     return {
         "Y": Y,
-        "W": treatment_matrix,
+        "W": W,
         "treated_units": treated_units,
         "T_pre": T_pre,
         "unit_labels": unit_labels,
@@ -45,7 +52,7 @@ def prepare_panel(
     }
 
 
-def prepare_panel_data(
+def _prepare_panel_data(
     df: pd.DataFrame,
     unit_col: str,
     time_col: str,
@@ -107,4 +114,22 @@ def prepare_panel_data(
         unique_times = sorted(df[time_col].unique())
         T_pre = unique_times.index(pre_treatment_period)
 
-    return Y, treated_units, T_pre
+    return Y, W, treated_units, T_pre
+
+
+@contextlib.contextmanager
+def tqdm_joblib(tqdm_object):
+    """Context manager to patch joblib to report into tqdm progress bar given as argument"""
+
+    class TqdmBatchCompletionCallback(joblib.parallel.BatchCompletionCallBack):
+        def __call__(self, *args, **kwargs):
+            tqdm_object.update(n=self.batch_size)
+            return super().__call__(*args, **kwargs)
+
+    old_batch_callback = joblib.parallel.BatchCompletionCallBack
+    joblib.parallel.BatchCompletionCallBack = TqdmBatchCompletionCallback
+    try:
+        yield tqdm_object
+    finally:
+        joblib.parallel.BatchCompletionCallBack = old_batch_callback
+        tqdm_object.close()
