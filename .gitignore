@@ -1,4 +1,4 @@
-synthlearners/__pycache__/*
+**/__pycache__/*
 *.csv
 *.dta
 *.xlsx
@@ -15,7 +15,6 @@ synthlearners/__pycache__/*
 *.shx
 *.qpj
 *.dbf
-*.RData
 *.Rds
 *.tab
 *.swp
@@ -27,3 +26,4 @@ synthlearners/__pycache__/*
 *.blg
 *.out
 *.synctex.gz
+notebooks/*.py
