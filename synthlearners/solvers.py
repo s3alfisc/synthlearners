@@ -41,6 +41,20 @@ def _solve_linear(Y_control: np.ndarray, Y_treated: np.ndarray) -> np.ndarray:
 
 
 def _solve_simplex(Y_control: np.ndarray, Y_treated: np.ndarray) -> np.ndarray:
+
+    def f(w, grad):
+        if grad.size > 0:
+            grad[:] = _gradient(w, Y_control.T, Y_treated)
+        return _objective(w, Y_control.T, Y_treated)
+
+    # Initialize optimizer
+    optimizer = pe.SimplexFrankWolfe(maxIterations=10000, tolerance=1e-8)
+    w_init = np.repeat(1.0 / Y_control.shape[0], Y_control.shape[0])
+    w_opt = optimizer.optimize(f, w_init)
+    return w_opt
+
+
+def _solve_simplex_slsqp(Y_control: np.ndarray, Y_treated: np.ndarray) -> np.ndarray:
     """Solve synthetic control problem with simplex constraints."""
     N_control = Y_control.shape[0]
     initial_w = np.repeat(1 / N_control, N_control)
